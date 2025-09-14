@@ -25,4 +25,8 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ["@react-three/postprocessing", "postprocessing"],
   },
+
+  test: {
+    environment: "node",
+  },
 });

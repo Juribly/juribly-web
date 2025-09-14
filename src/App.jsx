@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { getTrials, getPosts, accusePost } from "./lib/api.js";
+import api from "./lib/api.ts";
 import ProfileForm from "./components/ProfileForm.jsx";
 import PostForm from "./components/PostForm.jsx";
 import CourtroomShell from "./components/CourtroomShell.jsx";
@@ -90,7 +90,7 @@ function Posts({ currentProfile, onAccuseMade }) {
     try {
       setLoading(true);
       setErr("");
-      const res = await getPosts();
+      const res = await api.get("/api/posts");
       setPosts(res.posts || []);
     } catch (e) {
       setErr(String(e?.message || e));
@@ -110,7 +110,7 @@ function Posts({ currentProfile, onAccuseMade }) {
       return;
     }
     try {
-      const { trial } = await accusePost({ post_id: postId, accuser_id: currentProfile.id });
+      const { trial } = await api.post("/api/accuse", { post_id: postId, accuser_id: currentProfile.id });
       onAccuseMade?.(trial);
     } catch (e) {
       setAccuseErr(String(e?.message || e));
@@ -179,7 +179,7 @@ export default function App() {
     try {
       setLoading(true);
       setErr("");
-      const res = await getTrials();
+      const res = await api.get("/api/trials");
       setTrials(res.trials || []);
     } catch (e) {
       setErr(String(e?.message || e));

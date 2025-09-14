@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { upsertProfile, getProfile } from "../lib/api.js";
+import api from "../lib/api.ts";
 
 export default function ProfileForm({ onReady }) {
   const [handle, setHandle] = useState("");
@@ -15,7 +15,7 @@ export default function ProfileForm({ onReady }) {
     if (!handle.trim()) { setMsg("Handle is required."); return; }
     try {
       setBusy(true);
-      const prof = await upsertProfile({
+      const prof = await api.post("/api/profiles", {
         handle: handle.trim(),
         display_name: displayName.trim() || undefined,
         avatar_url: avatarUrl.trim() || undefined,
@@ -35,7 +35,7 @@ export default function ProfileForm({ onReady }) {
     if (!handle.trim()) { setMsg("Enter a handle to fetch."); return; }
     try {
       setBusy(true);
-      const prof = await getProfile(handle.trim());
+      const prof = await api.get(`/api/profiles/${encodeURIComponent(handle.trim())}`);
       setDisplayName(prof.display_name || "");
       setAvatarUrl(prof.avatar_url || "");
       setBio(prof.bio || "");
