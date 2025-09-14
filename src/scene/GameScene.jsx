@@ -5,7 +5,6 @@
 import React, { useRef } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-import * as THREE from "three";
 import ThirdPersonController from "../controls/ThirdPersonController";
 import AudienceFreecam from "../controls/AudienceFreecam";
 
@@ -19,7 +18,6 @@ function Ground() {
 }
 
 function SimpleArena() {
-  const mat = new THREE.MeshStandardMaterial({ color: "#555" });
   return (
     <group>
       {/* Four walls marked collidable */}
