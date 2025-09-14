@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import useMultiplayer from "../hooks/useMultiplayer";
@@ -50,20 +50,18 @@ export default function CourtroomMultiplayer({
     }
   });
 
-  const remotes = useMemo(() => others.map((p) => ({ id: p.socketId, data: p })), [others]);
-
   return (
     <>
-      {remotes.map(({ id, data }) => {
-        const rr = ensureRef(id);
+      {others.map((p) => {
+        const rr = ensureRef(p.socketId);
         return (
-          <group key={id} position={rr.pos} rotation={[0, rr.rotY, 0]}>
+          <group key={p.socketId} position={rr.pos} rotation={[0, rr.rotY, 0]}>
             {/* If you have CuteBuddy, uncomment this block and remove the cube below.
             <CuteBuddy
-              role={data.role}
-              name={data.display_name}
+              role={p.role}
+              name={p.display_name}
               getSpeed={() => 0}
-              emoteState={data.emote}
+              emoteState={p.emote}
             />
             */}
             <mesh>
