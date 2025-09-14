@@ -12,7 +12,7 @@ const damp = THREE.MathUtils.damp;
 const clamp = THREE.MathUtils.clamp;
 
 function keyAny(keys, names) { for (const n of names) if (keys[n]) return true; return false; }
-function yawToward(x, z) { return Math.atan2(-x, -z); }
+// function yawToward(x, z) { return Math.atan2(-x, -z); }
 function yawFromVelocity(vx, vz) { return Math.atan2(vx, vz); }
 
 function CuteBuddy({ role, name, getSpeed, emoteState, forcePose = "auto" }) {
@@ -201,7 +201,7 @@ function JudgeWigSafe() {
   );
 }
 
-const ArmGroup = React.forwardRef(function ArmGroup({ refU, refF, refH, x, y, primary }, _f) {
+const ArmGroup = React.forwardRef(function ArmGroup({ refU, refF, refH, x, y, primary }) {
   return (
     <group ref={refU} position={[x,y,0]}>
       <mesh castShadow><capsuleGeometry args={[.1,.34,6,12]}/><meshStandardMaterial color={primary} roughness={.7}/></mesh>
@@ -491,7 +491,7 @@ function SceneGeometry() {
 
 // --- Main Scene Component (with Multiplayer additions) ---
 
-export default function CourtroomScene({ trialId, role: roleProp, name, cameraMode }) {
+export default function CourtroomScene({ trialId, role: roleProp, name }) {
   const normalizedRole = (roleProp || "Audience").toString().trim().toLowerCase();
   const initialRole = normalizedRole === "judge" ? "Judge" : normalizedRole === "accused" ? "Accused" : "Audience";
   const [role, setRole] = useState(initialRole);

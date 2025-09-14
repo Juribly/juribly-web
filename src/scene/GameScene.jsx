@@ -19,7 +19,6 @@ function Ground() {
 }
 
 function SimpleArena() {
-  const mat = new THREE.MeshStandardMaterial({ color: "#555" });
   return (
     <group>
       {/* Four walls marked collidable */}
