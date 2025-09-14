@@ -5,6 +5,7 @@ import * as THREE from "three";
 import React, { useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { gatherColliders, keepAboveGround, sweepAndSlide } from "./CameraCollision";
+import { clamp, damp } from "../lib/math";
 
 const _next = new THREE.Vector3();
 const _move = new THREE.Vector3();
@@ -44,8 +45,8 @@ export default function AudienceFreecam({ enabled = true, start = new THREE.Vect
       yaw.current -= dx * 0.0025;
       pitch.current -= dy * 0.0025;
       // clamp pitch to avoid flipping
-      const lim = THREE.MathUtils.degToRad(85);
-      pitch.current = Math.max(-lim, Math.min(lim, pitch.current));
+      const lim = THREE.MathUtils.degToRad(80);
+      pitch.current = clamp(pitch.current, -lim, lim);
     };
     const onClick = () => {
       if (document.pointerLockElement !== dom) dom.requestPointerLock();
@@ -95,9 +96,11 @@ export default function AudienceFreecam({ enabled = true, start = new THREE.Vect
     keepAboveGround(_next, colliders, 0.05);
 
     // Smooth camera to target to avoid jitter
-    camera.position.lerp(_next, 1 - Math.exp(-SMOOTH * dt));
-    camera.quaternion.slerp(q, 1 - Math.exp(-SMOOTH * dt));
+    const s = damp(0, 1, SMOOTH, dt);
+    camera.position.lerp(_next, s);
+    camera.quaternion.slerp(q, s);
   });
 
   return null;
 }
+
