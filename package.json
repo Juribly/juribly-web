@@ -8,8 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest",
+    "test": "node --test",
     "clean": "rimraf node_modules package-lock.json && npm cache clean --force"
   },
   "dependencies": {
@@ -35,9 +34,6 @@
     "globals": "^16.3.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.10",
-    "vite": "^7.1.2",
-    "vitest": "^1.6.0",
-    "@testing-library/react": "^16.0.0",
-    "typescript": "^5.6.2"
+    "vite": "^7.1.2"
   }
 }
