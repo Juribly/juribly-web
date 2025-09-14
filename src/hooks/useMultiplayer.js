@@ -6,6 +6,8 @@ export default function useMultiplayer() {
   const [connected, setConnected] = useState(false);
   const [self, setSelf] = useState(null);
   const [participants, setParticipants] = useState(new Map());
+  const [trialId, setTrialId] = useState(null);
+  const trialRef = useRef(null);
   const lastPoseSentAt = useRef(0);
 
   // Socket lifecycle + listeners
@@ -67,9 +69,17 @@ export default function useMultiplayer() {
     return self?.socketId ? arr.filter(p => p.socketId !== self.socketId) : arr;
   }, [participants, self]);
 
-  const joinRoom = useCallback(({ trialId, role, name, handle, profile_id }) => {
+  const joinRoom = useCallback(({ trialId: id, role, name, handle, profile_id }) => {
+    if (!id) return;
     if (!socket.connected) socket.connect();
-    socket.emit("room:join", { trialId, role, name, handle, profile_id }, (ack) => {
+    if (trialRef.current && trialRef.current !== id) {
+      socket.emit("room:leave", { trialId: trialRef.current });
+      setParticipants(new Map());
+      setSelf(null);
+    }
+    trialRef.current = id;
+    setTrialId(id);
+    socket.emit("room:join", { trialId: id, role, name, handle, profile_id }, (ack) => {
       if (ack?.ok) setSelf(ack.self);
       else console.error("join failed", ack);
     });
@@ -77,6 +87,12 @@ export default function useMultiplayer() {
 
   const leaveRoom = useCallback(({ trialId }) => {
     socket.emit("room:leave", { trialId });
+    if (trialRef.current === trialId) {
+      trialRef.current = null;
+      setTrialId(null);
+      setSelf(null);
+      setParticipants(new Map());
+    }
   }, []);
 
   const updatePose = useCallback(({ trialId, pose }) => {
@@ -94,5 +110,21 @@ export default function useMultiplayer() {
     socket.emit("seat:request", { trialId });
   }, []);
 
-  return { connected, self, participants, others, joinRoom, leaveRoom, updatePose, sendEmote, requestSeat };
+  const startTrial = useCallback(() => {
+    return new Promise((resolve) => {
+      socket.emit("startTrial", {}, (ack) => {
+        const id = ack?.trialId || ack?.id || null;
+        if (id) {
+          if (trialRef.current) socket.emit("room:leave", { trialId: trialRef.current });
+          trialRef.current = id;
+          setTrialId(id);
+          setSelf(null);
+          setParticipants(new Map());
+        }
+        resolve(id);
+      });
+    });
+  }, []);
+
+  return { trialId, connected, self, participants, others, joinRoom, leaveRoom, startTrial, updatePose, sendEmote, requestSeat };
 }
