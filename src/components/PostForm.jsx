@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { createPost } from "../lib/api.js";
+import api from "../lib/api.ts";
 
 export default function PostForm({ authorId, onCreated }) {
   const [content, setContent] = useState("");
@@ -16,7 +16,7 @@ export default function PostForm({ authorId, onCreated }) {
 
     try {
       setBusy(true);
-      const post = await createPost({
+      const post = await api.post("/api/posts", {
         author_id: authorId,
         content: content.trim(),
         media_url: mediaUrl.trim() || null,

@@ -25,7 +25,7 @@ export function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={{ push, remove }}>
       {children}
-      <div style={{ position: "fixed", right: 12, bottom: 12, display: "grid", gap: 8, zIndex: 1000 }}>
+      <div style={{ position: "fixed", right: 12, top: 12, display: "grid", gap: 8, zIndex: 1000 }}>
         {toasts.map(t => (
           <div key={t.id} style={{ padding: 10, borderRadius: 8, background: "#111", color: "#fff", minWidth: 220, boxShadow: "0 6px 20px rgba(0,0,0,.3)" }}>
             {t.title && <div style={{ fontWeight: 700 }}>{t.title}</div>}

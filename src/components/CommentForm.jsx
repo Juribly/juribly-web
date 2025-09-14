@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { validateComment } from "../lib/validate.js";
 import { useToast } from "./toast/ToastProvider.jsx";
+import api from "../lib/api.ts";
 
 export default function CommentForm({ postId, onCreated }) {
   const [content, setContent] = useState("");
@@ -19,13 +20,7 @@ export default function CommentForm({ postId, onCreated }) {
     }
     try {
       setSubmitting(true);
-      const res = await fetch(`/api/posts/${postId}/comments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Failed to comment");
+      const json = await api.post(`/api/posts/${postId}/comments`, data);
       push({ variant: "success", title: "Comment added" });
       setContent("");
       onCreated?.(json);
