@@ -5,17 +5,15 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { Billboard, Html, Text } from "@react-three/drei";
 import useKeyboard from "../hooks/useKeyboard.js";
 import socket from "../lib/socket.js";
+import { damp, clamp, poseArm, widenShoulder, handOffsetForward, updateHand } from "./poseMath.js";
 
 // --- Helper Functions and Components (unchanged) ---
-
-const damp = THREE.MathUtils.damp;
-const clamp = THREE.MathUtils.clamp;
 
 function keyAny(keys, names) { for (const n of names) if (keys[n]) return true; return false; }
 function yawToward(x, z) { return Math.atan2(-x, -z); }
 function yawFromVelocity(vx, vz) { return Math.atan2(vx, vz); }
 
-function CuteBuddy({ role, name, getSpeed, emoteState, forcePose = "auto" }) {
+export function CuteBuddy({ role, name, getSpeed, emoteState, forcePose = "auto" }) {
   const primary = role === "Judge" ? "#f7c85f" : role === "Accused" ? "#ff6b6b" : "#7aa7ff";
   const body = useRef();
   const head = useRef();
@@ -67,7 +65,7 @@ function CuteBuddy({ role, name, getSpeed, emoteState, forcePose = "auto" }) {
     const setThumb = (h, rot, idx) => { if (!h.current) return; h.current.userData.thumbRot = rot; h.current.userData.indexExtend = idx; };
     if (active === "thumbs_up") {
       widenShoulder(uArmR, 0.18, dt);
-      poseArm(uArmR, fArmR, handR, { u: [-0.15, 0.65, -1.05], f: [-0.50, 0.35, 0.10], h: [0.25, 0.10, 0.25] }, dt, 24);
+      poseArm(uArmR, fArmR, handR, { u: [-0.15, 0.55, -1.05], f: [-0.50, 0.25, 0.10], h: [0.25, 0.10, 0.25] }, dt, 24);
       handOffsetForward(handR, 0.08, dt); setThumb(handR, -1.15, 0.05);
     } else if (active === "thumbs_down") {
       widenShoulder(uArmR, 0.10, dt);
@@ -83,11 +81,11 @@ function CuteBuddy({ role, name, getSpeed, emoteState, forcePose = "auto" }) {
       poseArm(uArmL, fArmL, handL, { u: [0.78, 0, 0.6], f: [0.98, 0, 0] }, dt, 20);
     } else if (active === "point_forward") {
       widenShoulder(uArmR, 0.16, dt);
-      poseArm(uArmR, fArmR, handR, { u: [-1.32, 0.28, 0], f: [-0.38, 0.35, 0], h: [0, 0.05, 0] }, dt, 22);
+      poseArm(uArmR, fArmR, handR, { u: [-1.32, 0.22, 0], f: [-0.38, 0.28, 0], h: [0, 0.05, 0] }, dt, 22);
       setThumb(handR, 0, 0.55); handOffsetForward(handR, 0.04, dt);
     } else if (active === "point_up") {
       widenShoulder(uArmR, 0.20, dt);
-      poseArm(uArmR, fArmR, handR, { u: [-0.10, 0.70, -1.56], f: [-0.22, 0.35, 0], h: [0, 0.12, 0] }, dt, 22);
+      poseArm(uArmR, fArmR, handR, { u: [-0.10, 0.60, -1.56], f: [-0.22, 0.35, 0], h: [0, 0.12, 0] }, dt, 22);
       setThumb(handR, 0, 0.6); handOffsetForward(handR, 0.02, dt);
     } else {
       if (body.current) body.current.rotation.x = damp(body.current.rotation.x, 0, 10, dt);
@@ -138,7 +136,6 @@ function CuteBuddy({ role, name, getSpeed, emoteState, forcePose = "auto" }) {
 
       <group ref={head} position={[0, 2.12, 0.02]}>
         <mesh castShadow><sphereGeometry args={[0.46, 22, 20]} /><meshStandardMaterial color={primary} roughness={0.6} /></mesh>
-        {role === "Judge" && <JudgeWigSafe />}
         <group position={[0, 0.03, 0.45]}>
           <EyeGroup left eyelidRef={eyelidL} />
           <EyeGroup eyelidRef={eyelidR} />
@@ -149,6 +146,7 @@ function CuteBuddy({ role, name, getSpeed, emoteState, forcePose = "auto" }) {
           </group>
         </group>
       </group>
+      {role === "Judge" && <JudgeWig headRef={head} />}
 
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]} renderOrder={1}>
         <circleGeometry args={[0.55, 32]} /><meshBasicMaterial color={"#000"} transparent opacity={0.12} />
@@ -170,13 +168,20 @@ function CuteBuddy({ role, name, getSpeed, emoteState, forcePose = "auto" }) {
   );
 }
 
-function JudgeWigSafe() {
+function JudgeWig({ headRef }) {
   const BACK_Z = -0.10, DROP_Y = -0.02, COLOR = "#ffffff";
+  const wig = useRef();
+  useEffect(() => {
+    const h = headRef.current;
+    const w = wig.current;
+    if (h && w) h.add(w);
+    return () => { if (h && w) h.remove(w); };
+  }, [headRef]);
   const curlRow = (r, y, z, c, s) =>
     Array.from({ length: c }).map((_, i) => {
-      const a = (i/c) * Math.PI * 1.6 - Math.PI * .8;
+      const a = (i / c) * Math.PI * 1.6 - Math.PI * 0.8;
       const x = Math.sin(a) * r;
-      const y2 = y + Math.cos(a) * .12;
+      const y2 = y + Math.cos(a) * 0.12;
       return (
         <mesh key={`${r}-${i}-${y}`} position={[x, y2, z]}>
           <sphereGeometry args={[s, 16, 14]} />
@@ -186,17 +191,29 @@ function JudgeWigSafe() {
     });
 
   return (
-    <group position={[0, 0.10+DROP_Y, BACK_Z]}>
-      <mesh position={[0,-.18,-.02]}><torusGeometry args={[.36,.06,12,36]}/><meshStandardMaterial color="#ececec" roughness={.25}/></mesh>
-      <mesh rotation={[0,0,Math.PI/2]} position={[0,-.18,-.02]}><torusGeometry args={[.36,.025,8,30]}/><meshStandardMaterial color="#f3f3f3" roughness={.2}/></mesh>
-      <mesh position={[-.43,-.05,-.06]} rotation={[0,0,Math.PI/2]}><torusGeometry args={[.14,.05,10,24]}/><meshStandardMaterial color="#fff"/></mesh>
-      <mesh position={[.43,-.05,-.06]} rotation={[0,0,Math.PI/2]}><torusGeometry args={[.14,.05,10,24]}/><meshStandardMaterial color="#fff"/></mesh>
-      {curlRow(.44,.02,-.1,18,.085)}
-      {curlRow(.37,.14,-.12,16,.08)}
-      {curlRow(.22,-.1,-.22,9,.075)}
-      {curlRow(.2,-.28,-.32,9,.07)}
-      {curlRow(.18,-.46,-.42,9,.065)}
-      {curlRow(.16,-.62,-.5,9,.06)}
+    <group ref={wig} position={[0, 0.10 + DROP_Y, BACK_Z]}>
+      <mesh position={[0, -0.18, -0.02]}>
+        <torusGeometry args={[0.36, 0.06, 12, 36]} />
+        <meshStandardMaterial color="#ececec" roughness={0.25} />
+      </mesh>
+      <mesh rotation={[0, 0, Math.PI / 2]} position={[0, -0.18, -0.02]}>
+        <torusGeometry args={[0.36, 0.025, 8, 30]} />
+        <meshStandardMaterial color="#f3f3f3" roughness={0.2} />
+      </mesh>
+      <mesh position={[-0.43, -0.05, -0.06]} rotation={[0, 0, Math.PI / 2]}>
+        <torusGeometry args={[0.14, 0.05, 10, 24]} />
+        <meshStandardMaterial color="#fff" />
+      </mesh>
+      <mesh position={[0.43, -0.05, -0.06]} rotation={[0, 0, Math.PI / 2]}>
+        <torusGeometry args={[0.14, 0.05, 10, 24]} />
+        <meshStandardMaterial color="#fff" />
+      </mesh>
+      {curlRow(0.44, 0.02, -0.1, 18, 0.085)}
+      {curlRow(0.37, 0.14, -0.12, 16, 0.08)}
+      {curlRow(0.22, -0.1, -0.22, 9, 0.075)}
+      {curlRow(0.2, -0.28, -0.32, 9, 0.07)}
+      {curlRow(0.18, -0.46, -0.42, 9, 0.065)}
+      {curlRow(0.16, -0.62, -0.5, 9, 0.06)}
     </group>
   );
 }
@@ -227,21 +244,6 @@ function EyeGroup({ left = false, eyelidRef }) {
   );
 }
 
-function poseArm(u,f,h,{u:r=[0,0,0],f:e=[0,0,0],h:t=[0,0,0]},a,p=14){
-  u.current&&(u.current.rotation.x=damp(u.current.rotation.x,r[0],p,a),u.current.rotation.y=damp(u.current.rotation.y,r[1],p,a),u.current.rotation.z=damp(u.current.rotation.z,r[2],p,a));
-  f.current&&(f.current.rotation.x=damp(f.current.rotation.x,e[0],p,a),f.current.rotation.y=damp(f.current.rotation.y,e[1],p,a),f.current.rotation.z=damp(f.current.rotation.z,e[2],p,a));
-  h.current&&(h.current.rotation.x=damp(h.current.rotation.x,t[0],p,a),h.current.rotation.y=damp(h.current.rotation.y,t[1],p,a),h.current.rotation.z=damp(h.current.rotation.z,t[2],p,a))
-}
-function widenShoulder(u,a,p){u.current&&(u.current.position.x=damp(u.current.position.x,(u.current.position.x>.0?.78:-.78)+(u.current.position.x>.0?a:-a),16,p))}
-function handOffsetForward(h,d,t){h.current&&(h.current.position.z=damp(h.current.position.z,d,18,t))}
-function updateHand(h,d){
-  if(h.current){
-    const e=h.current,t=e.children[1],a=e.children.find(c=>c.userData&&c.userData.index),n=e.userData.thumbRot||0,o=e.userData.indexExtend||0;
-    t&&(t.rotation.z=damp(t.rotation.z,n,18,d));
-    a&&(a.scale.x=damp(a.scale.x||1,1+o,18,d));
-    e.userData.thumbRot=damp(n,0,6,d); e.userData.indexExtend=damp(o,0,6,d)
-  }
-}
 function setFace(bL, bR, mouth, mood, dt) {
   const s = {
     idle:{bl:[0,0],br:[0,0],m:{open:0,smile:0}},
