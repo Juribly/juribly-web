@@ -1,0 +1,952 @@
+import React, { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
+import * as THREE from "three";
+import { useFrame, useThree } from "@react-three/fiber";
+import { Billboard, Html, Text } from "@react-three/drei";
+import useKeyboard from "../hooks/useKeyboard.js";
+import socket from "../lib/socket.js";
+
+/* ---------------- Small utils ---------------- */
+const damp = THREE.MathUtils.damp;
+const clamp = THREE.MathUtils.clamp;
+
+function keyAny(keys, names) { for (const n of names) if (keys[n]) return true; return false; }
+function yawToward(x, z) { return Math.atan2(-x, -z); }
+function yawFromVelocity(vx, vz) { return Math.atan2(vx, vz); }
+
+/* Local Y of CuteBuddy’s body when sitting: baseBodyY(0.98) - sitDrop(0.25) = 0.73 */
+const AVATAR_SIT_LOCAL_Y = 0.73;
+
+// NEW: This constant represents the vertical offset from the avatar's origin (feet)
+// to its lowest point when sitting. This is the crucial value for correct placement.
+// It's derived from the avatar's geometry: body_sit_y (0.73) + lowest_geometry_point_in_body (-0.96)
+const AVATAR_SIT_BOTTOM_OFFSET_Y = -0.23;
+
+
+/* ==========================================================
+   CuteBuddy – expressive mascot (wig + face refined)
+========================================================== */
+function CuteBuddy({ role, name, getSpeed, emoteState, forcePose = "auto" }) {
+  const primary =
+    role === "Judge" ? "#f7c85f" :
+    role === "Accused" ? "#ff6b6b" : "#7aa7ff";
+
+  const body = useRef(); const head = useRef();
+  const legL = useRef(); const legR = useRef();
+  const uArmL = useRef(), fArmL = useRef(), handL = useRef();
+  const uArmR = useRef(), fArmR = useRef(), handR = useRef();
+  const eyelidL = useRef(), eyelidR = useRef();
+  const browL = useRef(), browR = useRef();
+  const mouth = useRef();
+
+  const baseBodyY = 0.98;
+
+  const phase = useRef(0);
+  const speedSm = useRef(0);
+  const blink = useRef({ t: 1.8 + Math.random() * 2.2, closing: false });
+
+  useFrame((_, dt) => {
+    const t = performance.now();
+    const speed = typeof getSpeed === "function" ? getSpeed() : 0;
+    speedSm.current = damp(speedSm.current, speed, 10, dt);
+    const walking = speedSm.current > 0.06 && forcePose !== "sit";
+    const active = emoteState && emoteState.until > t ? emoteState.type : null;
+
+    // Time
+    phase.current += (walking ? 4.6 * (0.33 + speedSm.current * 0.45) : 2.0) * dt;
+
+    // Body bob/tilt
+    const targetY = forcePose === "sit" ? baseBodyY - 0.25 : baseBodyY;
+    const bob = walking ? Math.abs(Math.sin(phase.current * 1.6)) * 0.04 : 0.012 * Math.sin(t * 0.0025);
+    if (body.current) {
+      body.current.position.y = damp(body.current.position.y, targetY + (walking ? bob : 0), 10, dt);
+      const tilt = walking ? Math.sin(phase.current) * 0.045 : 0;
+      body.current.rotation.z = damp(body.current.rotation.z, tilt, 10, dt);
+      body.current.scale.y = damp(body.current.scale.y, walking ? 1 - bob * 0.12 : 1, 10, dt);
+    }
+
+    // Legs
+    if (forcePose === "sit") {
+      if (legL.current) legL.current.rotation.x = damp(legL.current.rotation.x, -1.2, 14, dt);
+      if (legR.current) legR.current.rotation.x = damp(legR.current.rotation.x, -1.2, 14, dt);
+    } else {
+      const swing = walking ? Math.sin(phase.current * 2.0) * 0.45 : 0;
+      if (legL.current) legL.current.rotation.x = damp(legL.current.rotation.x, swing, 12, dt);
+      if (legR.current) legR.current.rotation.x = damp(legR.current.rotation.x, -swing, 12, dt);
+    }
+
+    // Idle arm sway unless emote/sit
+    if (!active && forcePose !== "sit") {
+      const armSway = walking ? Math.sin(phase.current * 2.0 + Math.PI / 2) * 0.18 : 0.08 * Math.sin(t * 0.003);
+      poseArm(uArmL, fArmL, handL, { u: [armSway, 0, 0] }, dt);
+      poseArm(uArmR, fArmR, handR, { u: [-armSway, 0, 0] }, dt);
+    }
+
+    // EMOTES
+    const setThumb = (h, rot, idx) => { if (!h.current) return; h.current.userData.thumbRot = rot; h.current.userData.indexExtend = idx; };
+    if (active === "thumbs_up") {
+      widenShoulder(uArmR, 0.18, dt);
+      poseArm(uArmR, fArmR, handR, { u: [-0.15, 0.65, -1.05], f: [-0.50, 0.35, 0.10], h: [0.25, 0.10, 0.25] }, dt, 24);
+      handOffsetForward(handR, 0.08, dt);
+      setThumb(handR, -1.15, 0.05);
+    } else if (active === "thumbs_down") {
+      widenShoulder(uArmR, 0.10, dt);
+      poseArm(uArmR, fArmR, handR, { u: [0.95, 0.15, 0.15], f: [0.45, -0.1, 0], h: [Math.PI, 0, 0.1] }, dt, 24);
+      handOffsetForward(handR, 0.02, dt);
+      setThumb(handR, 1.15, 0.0);
+    } else if (active === "begging") {
+      poseArm(uArmL, fArmL, handL, { u: [-1.02, 0.36, 0.18], f: [-0.95, 0, 0] }, dt, 20);
+      poseArm(uArmR, fArmR, handR, { u: [-1.02, -0.36, -0.18], f: [-0.95, 0, 0] }, dt, 20);
+      if (body.current) body.current.rotation.x = damp(body.current.rotation.x, 0.18, 10, dt);
+    } else if (active === "argument") {
+      const wave = Math.sin(phase.current * 3.0) * 0.95 - 0.22;
+      poseArm(uArmR, fArmR, handR, { u: [-0.5, 0.3, 0.06], f: [wave, 0.4, 0], h: [0, 0.25, 0] }, dt, 24);
+      poseArm(uArmL, fArmL, handL, { u: [0.78, 0, 0.6], f: [0.98, 0, 0] }, dt, 20);
+    } else if (active === "point_forward") {
+      widenShoulder(uArmR, 0.16, dt);
+      poseArm(uArmR, fArmR, handR, { u: [-1.32, 0.28, 0], f: [-0.38, 0.35, 0], h: [0, 0.05, 0] }, dt, 22);
+      setThumb(handR, 0, 0.55);
+      handOffsetForward(handR, 0.04, dt);
+    } else if (active === "point_up") {
+      widenShoulder(uArmR, 0.20, dt);
+      poseArm(uArmR, fArmR, handR, { u: [-0.10, 0.70, -1.56], f: [-0.22, 0.35, 0], h: [0, 0.12, 0] }, dt, 22);
+      setThumb(handR, 0, 0.6);
+      handOffsetForward(handR, 0.02, dt);
+    } else {
+      if (body.current) body.current.rotation.x = damp(body.current.rotation.x, 0, 10, dt);
+      widenShoulder(uArmR, 0.0, dt);
+    }
+
+    updateHand(handL, dt); updateHand(handR, dt);
+
+    const mood = active ? active : (walking ? "walk" : "idle");
+    setFace(browL, browR, mouth, mood, dt);
+
+    // Blink
+    blink.current.t -= dt;
+    if (blink.current.t <= 0 && !blink.current.closing) { blink.current.closing = true; blink.current.t = 0.12; }
+    if (blink.current.closing) {
+      const s = Math.max(0, blink.current.t / 0.12), h = 0.12 * s + 0.02;
+      if (eyelidL.current) eyelidL.current.scale.y = damp(eyelidL.current.scale.y, h, 20, dt);
+      if (eyelidR.current) eyelidR.current.scale.y = damp(eyelidR.current.scale.y, h, 20, dt);
+      blink.current.t -= dt;
+      if (blink.current.t <= 0) {
+        blink.current.closing = false; blink.current.t = 1.8 + Math.random() * 2.4;
+        if (eyelidL.current) eyelidL.current.scale.y = 0.14;
+        if (eyelidR.current) eyelidR.current.scale.y = 0.14;
+      }
+    }
+  });
+
+  return (
+    <group>
+      {/* FEET */}
+      <group ref={legL} position={[-0.22, 0.16, 0]}>
+        <mesh castShadow><capsuleGeometry args={[0.12, 0.12, 6, 12]} /><meshStandardMaterial color={"#2a2a2a"} roughness={0.8} /></mesh>
+      </group>
+      <group ref={legR} position={[0.22, 0.16, 0]}>
+        <mesh castShadow><capsuleGeometry args={[0.12, 0.12, 6, 12]} /><meshStandardMaterial color={"#2a2a2a"} roughness={0.8} /></mesh>
+      </group>
+
+      {/* ARMS */}
+      <ArmGroup refU={uArmL} refF={fArmL} refH={handL} x={-0.78} y={1.02} primary={primary} left />
+      <ArmGroup refU={uArmR} refF={fArmR} refH={handR} x={0.78} y={1.02} primary={primary} />
+
+      {/* BODY */}
+      <group ref={body} position={[0, baseBodyY, 0]}>
+        <mesh castShadow position={[0, -0.36, 0]}><sphereGeometry args={[0.60, 22, 18]} /><meshStandardMaterial color={primary} roughness={0.65} metalness={0.05} /></mesh>
+        <mesh castShadow><cylinderGeometry args={[0.60, 0.60, 1.20, 26]} /><meshStandardMaterial color={primary} roughness={0.65} metalness={0.05} /></mesh>
+        <mesh castShadow position={[0, 0.64, 0]}><sphereGeometry args={[0.60, 22, 18]} /><meshStandardMaterial color={primary} roughness={0.65} metalness={0.05} /></mesh>
+      </group>
+
+      {/* HEAD */}
+      <group ref={head} position={[0, 2.12, 0.02]}>
+        <mesh castShadow><sphereGeometry args={[0.46, 22, 20]} /><meshStandardMaterial color={primary} roughness={0.6} /></mesh>
+        {role === "Judge" && <JudgeWigSafe />}
+
+        {/* face */}
+        <group position={[0, 0.03, 0.45]}>
+          <EyeGroup left eyelidRef={eyelidL} />
+          <EyeGroup eyelidRef={eyelidR} />
+          <mesh ref={browL} position={[-0.16, 0.16, 0.11]}><boxGeometry args={[0.20, 0.04, 0.02]} /><meshStandardMaterial color={"#222"} /></mesh>
+          <mesh ref={browR} position={[0.16, 0.16, 0.11]}><boxGeometry args={[0.20, 0.04, 0.02]} /><meshStandardMaterial color={"#222"} /></mesh>
+          <group ref={mouth} position={[0, -0.08, 0.05]}>
+            <mesh rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[0.10, 0.016, 8, 20, Math.PI]} /><meshStandardMaterial color={"#222"} /></mesh>
+          </group>
+        </group>
+      </group>
+
+      {/* soft ground shadow */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]} renderOrder={1}>
+        <circleGeometry args={[0.55, 32]} />
+        <meshBasicMaterial color={"#000"} transparent opacity={0.12} />
+      </mesh>
+
+      {/* Sticky name/role */}
+      <Billboard position={[0, 2.9, 0]}>
+        <group>
+          <Text fontSize={0.28} color="#ffffff" outlineWidth={0.04} outlineColor="#000000" anchorX="center" anchorY="bottom" maxWidth={2.5}>
+            {name || "You"}
+          </Text>
+          <Text position={[0, -0.18, 0]} fontSize={0.22} color="#d8e3ff" outlineWidth={0.03} outlineColor="#000000" anchorX="center" anchorY="top">
+            {role}
+          </Text>
+        </group>
+      </Billboard>
+
+      {/* Emoji bubble */}
+      {emoteState && emoteState.until > performance.now() && emoteState.emoji && (
+        <Billboard position={[0, 3.35, 0]}>
+          <Text fontSize={0.36} color="#000000">{emoteState.emoji}</Text>
+        </Billboard>
+      )}
+    </group>
+  );
+}
+
+function JudgeWigSafe() {
+  const BACK_Z = -0.10;
+  const DROP_Y = -0.02;
+  const COLOR = "#ffffff";
+
+  const curlRow = (r, yOff, zOff, count, size) =>
+    Array.from({ length: count }).map((_, i) => {
+      const a = (i / count) * Math.PI * 1.6 - Math.PI * 0.8;
+      const x = Math.sin(a) * r;
+      const y = yOff + Math.cos(a) * 0.12;
+      return (
+        <mesh key={`${r}-${i}-${yOff}`} position={[x, y, zOff]}>
+          <sphereGeometry args={[size, 16, 14]} />
+          <meshStandardMaterial color={COLOR} roughness={0.35} />
+        </mesh>
+      );
+    });
+
+  return (
+    <group position={[0, 0.10 + DROP_Y, BACK_Z]}>
+      <mesh position={[0, -0.18, -0.02]}><torusGeometry args={[0.36, 0.06, 12, 36]} /><meshStandardMaterial color={"#ececec"} roughness={0.25} /></mesh>
+      <mesh rotation={[0, 0, Math.PI / 2]} position={[0, -0.18, -0.02]}><torusGeometry args={[0.36, 0.025, 8, 30]} /><meshStandardMaterial color={"#f3f3f3"} roughness={0.2} /></mesh>
+
+      <mesh position={[-0.43, -0.05, -0.06]} rotation={[0, 0, Math.PI / 2]}><torusGeometry args={[0.14, 0.05, 10, 24]} /><meshStandardMaterial color={"#ffffff"} /></mesh>
+      <mesh position={[0.43, -0.05, -0.06]} rotation={[0, 0, Math.PI / 2]}><torusGeometry args={[0.14, 0.05, 10, 24]} /><meshStandardMaterial color={"#ffffff"} /></mesh>
+
+      {curlRow(0.44, 0.02, -0.10, 18, 0.085)}
+      {curlRow(0.37, 0.14, -0.12, 16, 0.08)}
+      {curlRow(0.22, -0.10, -0.22, 9, 0.075)}
+      {curlRow(0.20, -0.28, -0.32, 9, 0.07)}
+      {curlRow(0.18, -0.46, -0.42, 9, 0.065)}
+      {curlRow(0.16, -0.62, -0.50, 9, 0.06)}
+    </group>
+  );
+}
+
+const ArmGroup = React.forwardRef(function ArmGroup({ refU, refF, refH, x, y, primary }, _f) {
+  return (
+    <group ref={refU} position={[x, y, 0]}>
+      <mesh castShadow><capsuleGeometry args={[0.10, 0.34, 6, 12]} /><meshStandardMaterial color={primary} roughness={0.7} /></mesh>
+      <group ref={refF} position={[0, -0.36, 0]}>
+        <mesh castShadow position={[0, -0.22, 0]}><capsuleGeometry args={[0.095, 0.30, 6, 12]} /><meshStandardMaterial color={primary} roughness={0.7} /></mesh>
+        <group ref={refH} position={[0, -0.54, 0]}>
+          <mesh castShadow><boxGeometry args={[0.22, 0.12, 0.18]} /><meshStandardMaterial color={"#ffd7a3"} roughness={0.75} /></mesh>
+          <mesh position={[x > 0 ? 0.13 : -0.13, 0.02, 0]}><boxGeometry args={[0.06, 0.06, 0.06]} /><meshStandardMaterial color={"#ffd7a3"} /></mesh>
+          <mesh position={[x > 0 ? -0.12 : 0.12, 0, 0]} userData={{ index: true }}><boxGeometry args={[0.12, 0.04, 0.04]} /><meshStandardMaterial color={"#ffd7a3"} /></mesh>
+        </group>
+      </group>
+    </group>
+  );
+});
+
+function EyeGroup({ left = false, eyelidRef }) {
+  return (
+    <group position={[left ? -0.16 : 0.16, 0.06, 0]}>
+      <mesh><sphereGeometry args={[0.13, 16, 14]} /><meshStandardMaterial color={"#ffffff"} /></mesh>
+      <mesh position={[0, 0, 0.06]}><sphereGeometry args={[0.06, 14, 12]} /><meshStandardMaterial color={"#101010"} /></mesh>
+      <mesh ref={eyelidRef} position={[0, 0.02, 0.105]}><planeGeometry args={[0.26, 0.14]} /><meshStandardMaterial color={"#f4f7fb"} /></mesh>
+    </group>
+  );
+}
+
+/* helpers for arms & face */
+function poseArm(uRef, fRef, hRef, { u = [0, 0, 0], f = [0, 0, 0], h = [0, 0, 0] }, dt, speed = 14) {
+  if (uRef.current) { uRef.current.rotation.x = damp(uRef.current.rotation.x, u[0], speed, dt); uRef.current.rotation.y = damp(uRef.current.rotation.y, u[1], speed, dt); uRef.current.rotation.z = damp(uRef.current.rotation.z, u[2], speed, dt); }
+  if (fRef.current) { fRef.current.rotation.x = damp(fRef.current.rotation.x, f[0], speed, dt); fRef.current.rotation.y = damp(fRef.current.rotation.y, f[1], speed, dt); fRef.current.rotation.z = damp(fRef.current.rotation.z, f[2], speed, dt); }
+  if (hRef.current) { hRef.current.rotation.x = damp(hRef.current.rotation.x, h[0], speed, dt); hRef.current.rotation.y = damp(hRef.current.rotation.y, h[1], speed, dt); hRef.current.rotation.z = damp(hRef.current.rotation.z, h[2], speed, dt); }
+}
+function widenShoulder(uRef, amount, dt) { if (uRef.current) uRef.current.position.x = damp(uRef.current.position.x, (uRef.current.position.x > 0 ? 0.78 : -0.78) + (uRef.current.position.x > 0 ? amount : -amount), 16, dt); }
+function handOffsetForward(hRef, dz, dt) { if (hRef.current) hRef.current.position.z = damp(hRef.current.position.z, dz, 18, dt); }
+function updateHand(handRef, dt) {
+  if (!handRef.current) return;
+  const hand = handRef.current;
+  const thumb = hand.children[1];
+  const index = hand.children.find((c) => c.userData && c.userData.index);
+  const thumbRotTarget = hand.userData.thumbRot || 0;
+  const indexExtendTarget = hand.userData.indexExtend || 0;
+  if (thumb) thumb.rotation.z = damp(thumb.rotation.z, thumbRotTarget, 18, dt);
+  if (index) index.scale.x = damp(index.scale.x || 1, 1 + indexExtendTarget, 18, dt);
+  hand.userData.thumbRot = damp(thumbRotTarget, 0, 6, dt);
+  hand.userData.indexExtend = damp(indexExtendTarget, 0, 6, dt);
+}
+function setFace(bL, bR, mouth, mood, dt) {
+  const states = {
+    idle: { bl: [0, 0.0], br: [0, 0.0], m: { open: 0.0, smile: 0.0 } },
+    walk: { bl: [0.1, -0.15], br: [-0.1, 0.15], m: { open: 0.08, smile: 0.1 } },
+    thumbs_up: { bl: [-0.2, 0.2], br: [0.2, -0.2], m: { open: 0.05, smile: 0.7 } },
+    thumbs_down: { bl: [0.3, 0.3], br: [-0.3, -0.3], m: { open: 0.0, smile: -0.4 } },
+    begging: { bl: [0.25, 0.2], br: [-0.25, -0.2], m: { open: 0.15, smile: -0.1 } },
+    argument: { bl: [-0.25, 0.0], br: [0.25, 0.0], m: { open: 0.2, smile: 0.0 } },
+    point_forward: { bl: [0.0, 0.15], br: [0.0, -0.15], m: { open: 0.05, smile: 0.2 } },
+    point_up: { bl: [0.0, 0.2], br: [0.0, -0.2], m: { open: 0.05, smile: 0.3 } },
+  };
+  const t = states[mood] || states.idle;
+  if (bL.current && bR.current) {
+    bL.current.rotation.z = damp(bL.current.rotation.z, t.bl[0], 12, dt);
+    bR.current.rotation.z = damp(bR.current.rotation.z, t.br[0], 12, dt);
+  }
+  if (mouth.current) {
+    const s = clamp(1 + t.m.smile, 0.6, 1.6);
+    mouth.current.scale.x = damp(mouth.current.scale.x || 1, s, 10, dt);
+    mouth.current.scale.y = damp(mouth.current.scale.y || 1, 1 + t.m.open, 10, dt);
+  }
+}
+
+/* ============================ Scene Root ============================ */
+export default function CourtroomScene({ trialId, role: roleProp, name, cameraMode }) {
+  const normalizedRole = (roleProp || "Audience").toString().trim().toLowerCase();
+  const initialRole = normalizedRole === "judge" ? "Judge" : normalizedRole === "accused" ? "Accused" : "Audience";
+  const [role, setRole] = useState(initialRole);
+
+  const bodyRef = useRef();
+  const keys = useKeyboard();
+  const vel = useRef([0, 0, 0]);
+  const speedRef = useRef(0);
+  const [bubbles, setBubbles] = useState([]);
+  const [banner, setBanner] = useState(null);
+
+  // Precompute seats
+  const SEATING = useMemo(() => {
+    const rows = 5, startR = 12.0, stepDepth = 2.0, stepHeight = 0.6;
+    const aisles = [25 * (Math.PI / 180), 205 * (Math.PI / 180)];
+    const gap = 0.22;
+
+    const allSeats = [];
+    for (let i = 0; i < rows; i++) {
+      const inner = startR + i * stepDepth;
+      const outer = inner + stepDepth * 1.02;
+      const seatRadius = (inner + outer) * 0.5;
+      const benchCount = Math.max(18, Math.round((2 * Math.PI * seatRadius) / 1.5));
+      for (let j = 0; j < benchCount; j++) {
+        const a = (j / benchCount) * Math.PI * 2;
+        const nearAisle = aisles.some(aa => Math.abs(((a - aa + Math.PI * 3) % (Math.PI * 2)) - Math.PI) < gap);
+        if (nearAisle) continue;
+        const x = Math.cos(a) * seatRadius;
+        const z = Math.sin(a) * seatRadius;
+
+        // World Y of seat top (bench top + cushion-ish)
+        const seatWorldY = (1.0 + i * stepHeight) + 0.35 + 0.11;
+
+        // Face toward stage center
+        const yaw = Math.atan2(-x, -z);
+
+        allSeats.push({ x, z, yaw, seatWorldY, angle: a });
+      }
+    }
+
+    function randomSeat() {
+      if (!allSeats.length) return { x: 0, z: 14, yaw: 0, seatWorldY: 1.35 };
+      const preferred = allSeats.filter(s => s.angle > -Math.PI/2 && s.angle < Math.PI/2);
+      const pool = preferred.length >= 6 ? preferred : allSeats;
+      return pool[Math.floor(Math.random() * pool.length)];
+    }
+
+    return { randomSeat };
+  }, []);
+
+  const [audSeat, setAudSeat] = useState(null);
+  const [emoteState, setEmoteState] = useState(null);
+
+  // emotes 1..6
+  useEffect(() => {
+    const map = { Digit1: "thumbs_up", Digit2: "thumbs_down", Digit3: "begging", Digit4: "argument", Digit5: "point_forward", Digit6: "point_up" };
+    const onDown = (e) => {
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.getAttribute("contenteditable") === "true")) return;
+      const type = map[e.code]; if (!type) return;
+      const DUR = 1600;
+      const emojis = { thumbs_up: "👍", thumbs_down: "👎", begging: "🙏", argument: "🗣️", point_forward: "👉", point_up: "☝️" };
+      setEmoteState({ type, emoji: emojis[type], until: performance.now() + DUR });
+    };
+    window.addEventListener("keydown", onDown);
+    return () => window.removeEventListener("keydown", onDown);
+  }, []);
+
+  // keep role from prop
+  useEffect(() => {
+    if (!roleProp) return;
+    const n = roleProp.toString().trim().toLowerCase();
+    const mapped = n === "judge" ? "Judge" : n === "accused" ? "Accused" : "Audience";
+    if (mapped !== role) setRole(mapped);
+  }, [roleProp]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Join room / role announce
+  useEffect(() => {
+    if (!trialId) return;
+    socket.emit("room:join", { trialId, role, name });
+    socket.emit("role:update", { trialId, role });
+  }, [trialId, role, name]);
+
+  // Chat input
+  useEffect(() => {
+    const input = document.getElementById("juribly-chat-input");
+    const btn = document.getElementById("juribly-chat-send");
+    if (!input || !btn) return;
+    const send = () => {
+      const txt = (input.value || "").trim();
+      if (!txt) return;
+      const p = bodyRef.current ? bodyRef.current.position : new THREE.Vector3();
+      socket.emit("chat:msg", { trialId, payload: { text: txt, position: { x: p.x, y: p.y, z: p.z } } });
+      input.value = "";
+    };
+    const onKey = (e) => { if (e.key === "Enter") send(); };
+    btn.addEventListener("click", send);
+    input.addEventListener("keydown", onKey);
+    return () => { btn.removeEventListener("click", send); input.removeEventListener("keydown", onKey); };
+  }, [trialId]);
+
+  /* Audience seat choice & placement */
+  useLayoutEffect(() => {
+    if (!SEATING || !bodyRef.current) return;
+
+    if (role === "Audience") {
+      const seat = SEATING.randomSeat();
+      setAudSeat(seat);
+      
+      // FIX: The original calculation was logically incorrect, causing the avatar to float or sink.
+      // The new calculation correctly positions the avatar's origin (feet) so that its
+      // sitting "bottom" rests perfectly on top of the seat.
+      // It uses the seat's world height and subtracts the known offset of the avatar's bottom.
+      const parentY = seat.seatWorldY - AVATAR_SIT_BOTTOM_OFFSET_Y;
+
+      bodyRef.current.position.set(seat.x, parentY, seat.z);
+      bodyRef.current.rotation.y = seat.yaw;
+      if (trialId) socket.emit("seat:request", { trialId, hint: { x: seat.x, z: seat.z } });
+    } else {
+      setAudSeat(null);
+      // Reset spawn for Judge/Accused (grounded)
+      if (role === "Judge") bodyRef.current.position.set(0, 0, -5.3);
+      if (role === "Accused") bodyRef.current.position.set(0, 0, 2.4);
+    }
+  }, [role, trialId, SEATING]);
+
+  // If server adjusts the seat, update X/Z + yaw once; keep Y
+  useEffect(() => {
+    const onAssigned = ({ ok, seat }) => {
+      if (!ok || !seat) return;
+      const x = seat.x, z = seat.z;
+      const yaw = yawToward(x, z);
+      // FIX: When the server assigns a seat, recalculate the Y position with the correct logic.
+      const seatWorldY = audSeat?.seatWorldY || (bodyRef.current ? bodyRef.current.position.y + AVATAR_SIT_BOTTOM_OFFSET_Y : 1.46);
+      const parentY = seatWorldY - AVATAR_SIT_BOTTOM_OFFSET_Y;
+      setAudSeat(prev => ({ ...(prev || {}), x, z, yaw, seatWorldY }));
+
+      if (bodyRef.current) {
+        bodyRef.current.position.set(x, parentY, z);
+        bodyRef.current.rotation.y = yaw;
+      }
+    };
+    socket.on("seat:assigned", onAssigned);
+    return () => socket.off("seat:assigned", onAssigned);
+  }, [audSeat]); // FIX: Added audSeat to dependency array to ensure seatWorldY is available.
+
+  // Network chat & banner
+  useEffect(() => {
+    const onMsg = (msg) => {
+      const id = msg.id;
+      const entry = { id, text: `${msg.from}: ${msg.text}`, position: msg.position || { x: 0, y: 0, z: 0 }, expires: performance.now() + 4000 };
+      setBubbles((prev) => [...prev.filter((b) => b.expires > performance.now()), entry].slice(-20));
+      setTimeout(() => setBubbles((prev) => prev.filter((b) => b.id !== id)), 4200);
+    };
+    const onBanner = (b) => { setBanner(b.text); setTimeout(() => setBanner(null), 4000); };
+    socket.on("chat:msg", onMsg); socket.on("court:banner", onBanner);
+    return () => { socket.off("chat:msg", onMsg); socket.off("court:banner", onBanner); };
+  }, []);
+
+  /* Camera & movement */
+  const { camera } = useThree();
+  const chaseSmooth = useRef([0, 7.6, 14.2]);
+
+  // obstacles
+  const playerR = 0.35;
+  const obstacles = useMemo(
+    () => [
+      { x: 0, z: -4.5, r: 2.35 },
+      { x: 0, z: 0.8, r: 0.7 },
+      { x: -3.6, z: -1.2, r: 1.2 },
+      { x: 3.6, z: -1.2, r: 1.2 },
+      { x: 1.2, z: -3.0, r: 0.9 },
+      { x: -2.1, z: -3.1, r: 0.6 },
+      { x: 2.1, z: -3.1, r: 0.6 },
+      { x: 0, z: 9.0, r: 0.45 },
+    ],
+    []
+  );
+
+  useFrame((_, dtRaw) => {
+    if (!bodyRef.current) return;
+    const dt = clamp(dtRaw, 0, 0.05);
+    const pNow = bodyRef.current.position;
+
+    // AUDIENCE: do not touch Y; do not keep forcing X/Z every frame (effects already set it).
+    if (role === "Audience") {
+      vel.current = [0, 0, 0];
+      speedRef.current = 0;
+
+      // Camera (bench view) — target orbit based on seat X/Z
+      const seatVec = audSeat ? new THREE.Vector3(audSeat.x, 0, audSeat.z) : new THREE.Vector3(18, 0, 0);
+      const dir = seatVec.clone().normalize();
+      const WALL_R = 27.0;
+      const camR = Math.min(WALL_R - 2.6, seatVec.length() + 10.2);
+      const camTarget = dir.multiplyScalar(camR);
+      const target = [camTarget.x, Math.max(9.5, camera.position.y), camTarget.z];
+
+      chaseSmooth.current[0] = damp(chaseSmooth.current[0], target[0], 6, dt);
+      chaseSmooth.current[1] = damp(chaseSmooth.current[1], target[1], 6, dt);
+      chaseSmooth.current[2] = damp(chaseSmooth.current[2], target[2], 6, dt);
+      chaseSmooth.current[1] = Math.max(chaseSmooth.current[1], 2.2);
+      camera.position.set(...chaseSmooth.current);
+      camera.lookAt(0, 1.6, -2.2);
+      return;
+    }
+
+    // Judge / Accused movement
+    const ae = document.activeElement;
+    const typing = ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.getAttribute("contenteditable") === "true");
+
+    const isShift = keyAny(keys, ["ShiftLeft", "ShiftRight"]) || keys.shift;
+    const accel = (isShift ? 2.2 : 1.4) * dt;
+    const friction = 0.90;
+
+    let [vx, vy, vz] = vel.current;
+    if (!typing) {
+      if (keys["KeyW"] || keys["ArrowUp"] || keys.forward) vz -= accel;
+      if (keys["KeyS"] || keys["ArrowDown"] || keys.back) vz += accel;
+      if (keys["KeyA"] || keys["ArrowLeft"] || keys.left) vx -= accel;
+      if (keys["KeyD"] || keys["ArrowRight"] || keys.right) vx += accel;
+    }
+    vx *= friction; vz *= friction;
+
+    const p = pNow.clone();
+    p.x += vx; p.z += vz;
+
+    // Arena clamp
+    const arenaMaxR = 9.4;
+    const rNow = Math.hypot(p.x, p.z);
+    if (rNow > arenaMaxR) { const s = arenaMaxR / rNow; p.x *= s; p.z *= s; vx = 0; vz = 0; }
+
+    // Obstacle push-out
+    for (const o of obstacles) {
+      const dx = p.x - o.x, dz = p.z - o.z;
+      const d = Math.hypot(dx, dz);
+      const minD = o.r + playerR;
+      if (d < minD && d > 0.0001) {
+        const push = (minD - d) + 0.001;
+        p.x += (dx / d) * push;
+        p.z += (dz / d) * push;
+        vx = 0; vz = 0;
+      }
+    }
+
+    bodyRef.current.position.set(p.x, pNow.y, p.z);
+    vel.current = [vx, vy, vz];
+
+    const speed = Math.hypot(vx, vz) / Math.max(dt, 1e-4);
+    speedRef.current = speed;
+
+    if (speed > 0.001) {
+      bodyRef.current.rotation.y = yawFromVelocity(vx, vz);
+    }
+
+    // Camera follow
+    const desired = [p.x + 0, 7.6, p.z + 14.2];
+    chaseSmooth.current[0] = damp(chaseSmooth.current[0], desired[0], 6, dt);
+    chaseSmooth.current[1] = damp(chaseSmooth.current[1], desired[1], 6, dt);
+    chaseSmooth.current[2] = damp(chaseSmooth.current[2], desired[2], 6, dt);
+    chaseSmooth.current[1] = Math.max(chaseSmooth.current[1], 2.2);
+    camera.position.set(...chaseSmooth.current);
+    camera.lookAt(p.x, 1.0, p.z);
+  });
+
+  return (
+    <>
+      {/* in-scene role switcher */}
+      <Html transform={false} position={[0,0,0]}>
+        <div style={{
+          position:"fixed", top:12, left:12, zIndex:50,
+          background:"rgba(17,24,39,.85)", color:"#fff",
+          padding:"8px 10px", borderRadius:10, display:"flex", gap:8, alignItems:"center"
+        }}>
+          <span style={{fontWeight:600, fontSize:12}}>Role</span>
+          <select
+            value={role}
+            onChange={(e)=>setRole(e.target.value)}
+            style={{background:"#111827", color:"#fff", border:"1px solid #374151", borderRadius:6, padding:"4px 6px"}}
+          >
+            <option>Judge</option>
+            <option>Accused</option>
+            <option>Audience</option>
+          </select>
+          <span style={{opacity:.8,fontSize:12,marginLeft:6}}>Emotes: 1–6</span>
+        </div>
+      </Html>
+
+      <hemisphereLight skyColor={"#f9fbff"} groundColor={"#e7edf5"} intensity={0.55} />
+      <directionalLight castShadow color={"#ffeec7"} intensity={0.7} position={[-30, 40, 20]}
+        shadow-mapSize-width={1024} shadow-mapSize-height={1024} />
+
+      <SceneGeometry />
+
+      {/* player */}
+      <group ref={bodyRef}>
+        <CuteBuddy
+          role={role}
+          name={name}
+          getSpeed={() => speedRef.current}
+          emoteState={emoteState}
+          forcePose={role === "Audience" ? "sit" : "auto"}
+        />
+      </group>
+
+      {/* guards */}
+      <Guard position={[-2.1, 0, -3.1]} heading={Math.PI / 12} />
+      <Guard position={[2.1, 0, -3.1]} heading={-Math.PI / 12} mirrored />
+
+      {/* chat bubbles */}
+      {bubbles.map((b) => (
+        <Billboard key={b.id} position={[b.position.x, (b.position.y || 0) + 2.6, b.position.z]}>
+          <Text fontSize={0.24} color="#ffffff" outlineWidth={0.04} outlineColor="#000000" maxWidth={6}>
+            {b.text}
+          </Text>
+        </Billboard>
+      ))}
+
+      {/* banner */}
+      {banner && (
+        <Billboard position={[0, 5.2, 0]}>
+          <Text fontSize={0.5} color="#2d2415" outlineWidth={0.04} outlineColor="#e7d48e" maxWidth={18}>
+            {banner}
+          </Text>
+        </Billboard>
+      )}
+    </>
+  );
+}
+
+/* ---------------- Scene & assets ---------------- */
+// NOTE: The rest of the file (SceneGeometry, Guard, AudienceTiers, etc.) is unchanged
+// as the issue was purely in the player logic of the CourtroomScene component.
+// I am including it here for completeness as requested.
+
+function SceneGeometry() {
+  const arenaR = 10.2;
+
+  const gridTex = useMemo(() => {
+    const size = 256, step = 32;
+    const c = document.createElement("canvas"); c.width = c.height = size;
+    const ctx = c.getContext("2d");
+    ctx.clearRect(0, 0, size, size);
+    ctx.strokeStyle = "rgba(0,0,0,0.08)"; ctx.lineWidth = 1;
+    for (let x = 0; x <= size; x += step) { ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, size); ctx.stroke(); }
+    for (let y = 0; y <= size; y += step) { ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(size, y + 0.5); ctx.stroke(); }
+    const tex = new THREE.CanvasTexture(c); tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.anisotropy = 8;
+    return tex;
+  }, []);
+
+  return (
+    <group>
+      <WallsPillarsAndDome />
+
+      {/* main floor */}
+      <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} renderOrder={1}>
+        <circleGeometry args={[arenaR + 5, 64]} />
+        <meshStandardMaterial color={"#f4f7fb"} polygonOffset polygonOffsetFactor={1} polygonOffsetUnits={1} />
+      </mesh>
+
+      {/* grid overlay */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]} renderOrder={2}>
+        <planeGeometry args={[40, 40, 1, 1]} />
+        <meshBasicMaterial map={gridTex} transparent opacity={0.45} depthWrite={false} />
+      </mesh>
+
+      {/* medallion + carpet */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.11, 0]} renderOrder={9}>
+        <ringGeometry args={[3.6, 3.9, 64]} />
+        <meshStandardMaterial color={"#e7d6ad"} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.12, 0]} renderOrder={10}>
+        <circleGeometry args={[5.0, 128]} />
+        <meshStandardMaterial color={"#d14a4a"} polygonOffset polygonOffsetFactor={16} polygonOffsetUnits={16} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.11, -2.2]} renderOrder={9}>
+        <planeGeometry args={[2.2, 4.2]} />
+        <meshStandardMaterial color={"#e06a6a"} polygonOffset polygonOffsetFactor={12} polygonOffsetUnits={12} />
+      </mesh>
+
+      {/* inner handrail ring + posts */}
+      <mesh position={[0, 0.95, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[9.0, 0.06, 8, 192]} />
+        <meshStandardMaterial color={"#8f673f"} roughness={0.7} />
+      </mesh>
+      <group>
+        {Array.from({ length: 14 }).map((_, i) => {
+          const a = (i / 14) * Math.PI * 2, x = Math.cos(a) * 9.0, z = Math.sin(a) * 9.0;
+          return (
+            <mesh key={i} position={[x, 0.45, z]} castShadow renderOrder={3}>
+              <cylinderGeometry args={[0.085, 0.085, 0.9, 12]} />
+              <meshStandardMaterial color={"#a77a4d"} roughness={0.8} />
+            </mesh>
+          );
+        })}
+      </group>
+
+      {/* dais + larger bench + podiums */}
+      <group position={[0, 0, -4.5]} renderOrder={3}>
+        <mesh castShadow><cylinderGeometry args={[2.2, 2.2, 1.4, 32]} /><meshStandardMaterial color={"#b78656"} /></mesh>
+        <mesh position={[0, 1.25, -0.2]} castShadow><boxGeometry args={[4.2, 1.0, 1.2]} /><meshStandardMaterial color={"#a27345"} /></mesh>
+        <JudgePodium position={[-1.2, 0, 0.4]} />
+        <JudgePodium position={[0, 0, 0.4]} />
+        <JudgePodium position={[1.2, 0, 0.4]} />
+      </group>
+
+      {/* crest & flags */}
+      <group position={[0, 6.2, -8.5]}>
+        <mesh><torusGeometry args={[1.0, 0.08, 8, 48]} /><meshStandardMaterial color={"#d5b36b"} metalness={0.3} roughness={0.3} /></mesh>
+        <mesh position={[0, -0.1, 0]}><circleGeometry args={[0.6, 32]} /><meshStandardMaterial color={"#f7dfa1"} emissive={"#f7dfa1"} emissiveIntensity={0.15} /></mesh>
+        <BannerFlag pos={[-2.8, -1.0, 0.1]} color={"#2b6cb0"} />
+        <BannerFlag pos={[2.8, -1.0, 0.1]} color={"#b83280"} flip />
+      </group>
+
+      {/* lectern + witness + tables */}
+      <Lectern position={[0, 0, 0.8]} rotationY={Math.PI} />
+      <WitnessBox position={[1.2, 0, -3.0]} />
+      <CounselTable position={[3.6, 0, -1.2]} label={"Prosecution"} />
+      <CounselTable position={[-3.6, 0, -1.2]} label={"Defense"} />
+
+      {/* seating */}
+      <AudienceTiers />
+    </group>
+  );
+}
+
+function JudgePodium({ position = [0,0,0] }) {
+  return (
+    <group position={position}>
+      <mesh castShadow position={[0, 0.75, 0.05]}><boxGeometry args={[0.9, 0.22, 0.6]} /><meshStandardMaterial color={"#b07a4e"} /></mesh>
+      <mesh castShadow position={[0, 0.38, 0]}><boxGeometry args={[0.75, 0.5, 0.5]} /><meshStandardMaterial color={"#a27345"} /></mesh>
+      <mesh position={[0, 0.85, 0.15]}><boxGeometry args={[0.6, 0.04, 0.3]} /><meshStandardMaterial color={"#e5dfc8"} /></mesh>
+    </group>
+  );
+}
+function BannerFlag({ pos = [0,0,0], color = "#2b6cb0", flip = false }) {
+  return (
+    <group position={pos}>
+      <mesh position={[0, 1.4, 0]}><cylinderGeometry args={[0.04, 0.04, 2.8, 8]} /><meshStandardMaterial color={"#a77a4d"} /></mesh>
+      <mesh position={[flip ? -0.6 : 0.6, 1.6, 0]}><planeGeometry args={[1.2, 0.8]} /><meshStandardMaterial color={color} /></mesh>
+      <mesh position={[0.0, 0.05, 0]}><sphereGeometry args={[0.07, 10, 10]} /><meshStandardMaterial color={"#d5b36b"} /></mesh>
+    </group>
+  );
+}
+
+function WallsPillarsAndDome() {
+  const WALL_R = 27.0, PILLAR_R = WALL_R - 0.8, HEIGHT = 12;
+  const glassMat = useMemo(() => {
+    const s = 256, c = document.createElement("canvas"); c.width = c.height = s;
+    const g = c.getContext("2d"); const grd = g.createRadialGradient(s/2, s/2, 10, s/2, s/2, s/2);
+    grd.addColorStop(0, "rgba(255,255,255,0.35)"); grd.addColorStop(1, "rgba(255,255,255,0.05)");
+    g.fillStyle = grd; g.beginPath(); g.arc(s/2, s/2, s/2, 0, Math.PI*2); g.fill();
+    const tex = new THREE.CanvasTexture(c);
+    return new THREE.MeshStandardMaterial({ map: tex, transparent: true, opacity: 0.9, roughness: 0.1, metalness: 0.1 });
+  }, []);
+
+  return (
+    <group>
+      <mesh><sphereGeometry args={[90, 36, 28]} /><meshBasicMaterial color={"#eef3f8"} side={THREE.BackSide} /></mesh>
+
+      <group position={[0, HEIGHT / 2, 0]}>
+        <mesh><cylinderGeometry args={[WALL_R, WALL_R, HEIGHT, 120, 1, true]} /><meshStandardMaterial color={"#fafcff"} side={THREE.BackSide} roughness={0.95} /></mesh>
+        <mesh><cylinderGeometry args={[WALL_R + 0.5, WALL_R + 0.5, HEIGHT + 0.1, 120, 1, true]} /><meshStandardMaterial color={"#f1f5fa"} side={THREE.FrontSide} roughness={0.95} /></mesh>
+      </group>
+
+      <group>
+        {Array.from({ length: 32 }).map((_, i) => {
+          const a = (i / 32) * Math.PI * 2, x = Math.cos(a) * PILLAR_R, z = Math.sin(a) * PILLAR_R;
+          return (
+            <group key={i} position={[x, 0, z]} rotation={[0, -a, 0]}>
+              <mesh position={[0, 0.4, 0]} castShadow><cylinderGeometry args={[0.9, 1.0, 0.8, 24]} /><meshStandardMaterial color={"#ffffff"} /></mesh>
+              <mesh position={[0, 4.2, 0]} castShadow><cylinderGeometry args={[0.65, 0.75, 7.6, 32]} /><meshStandardMaterial color={"#ffffff"} roughness={0.6} /></mesh>
+              <mesh position={[0, 7.9, 0]} castShadow><cylinderGeometry args={[0.95, 0.95, 0.6, 24]} /><meshStandardMaterial color={"#ffffff"} /></mesh>
+              {i % 2 === 0 && (
+                <group position={[0, 6.2, -1.2]}>
+                  <mesh><boxGeometry args={[3.0, 3.6, 0.12]} /><meshStandardMaterial color={"#e9eef5"} /></mesh>
+                  <mesh position={[0, 0, -0.08]}><planeGeometry args={[2.6, 3.0]} /><meshStandardMaterial color={"#d7ebff"} emissive={"#d7ebff"} emissiveIntensity={0.18} transparent opacity={0.9} /></mesh>
+                </group>
+              )}
+            </group>
+          );
+        })}
+        <mesh position={[0, 8.4, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <ringGeometry args={[PILLAR_R - 0.8, PILLAR_R + 0.8, 128]} />
+          <meshStandardMaterial color={"#ffffff"} side={THREE.DoubleSide} />
+        </mesh>
+      </group>
+
+      <group position={[0, 11.5, 0]}>
+        <mesh>
+          <sphereGeometry args={[23, 36, 24, 0, Math.PI * 2, 0, Math.PI / 2]} />
+          <meshStandardMaterial color={"#f7fbff"} side={THREE.BackSide} roughness={0.95} />
+        </mesh>
+        <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.3, 0]}><ringGeometry args={[2.6, 3.2, 48]} /><meshStandardMaterial color={"#d5b36b"} metalness={0.35} roughness={0.3} /></mesh>
+        <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.31, 0]} material={glassMat}><circleGeometry args={[2.6, 40]} /></mesh>
+      </group>
+    </group>
+  );
+}
+
+/* Furnishings */
+function Lectern({ position = [0, 0, 0.8], rotationY = 0 }) {
+  return (
+    <group position={position} rotation={[0, rotationY, 0]} renderOrder={3}>
+      <mesh castShadow position={[0, 0.25, 0]}><boxGeometry args={[0.6, 0.5, 0.5]} /><meshStandardMaterial color={"#b78656"} /></mesh>
+      <mesh castShadow position={[0, 0.95, 0]}><boxGeometry args={[0.18, 1.4, 0.18]} /><meshStandardMaterial color={"#a27345"} /></mesh>
+      <group position={[0, 1.65, -0.05]} rotation={[-0.5, 0, 0]}>
+        <mesh castShadow><boxGeometry args={[0.8, 0.06, 0.5]} /><meshStandardMaterial color={"#b07a4e"} /></mesh>
+        <mesh position={[0, 0.05, -0.22]} castShadow><boxGeometry args={[0.8, 0.06, 0.06]} /><meshStandardMaterial color={"#a27345"} /></mesh>
+      </group>
+      <mesh castShadow position={[0, 0.02, 0]}><boxGeometry args={[0.9, 0.04, 0.9]} /><meshStandardMaterial color={"#a77a4d"} /></mesh>
+    </group>
+  );
+}
+function WitnessBox({ position = [1.2, 0, -3.0] }) {
+  return (
+    <group position={position}>
+      <mesh castShadow position={[0, 0.45, 0]}><boxGeometry args={[1.0, 0.9, 0.8]} /><meshStandardMaterial color={"#a97c4f"} /></mesh>
+      <mesh castShadow position={[0, 0.95, -0.35]}><boxGeometry args={[1.0, 0.6, 0.08]} /><meshStandardMaterial color={"#8f673f"} /></mesh>
+      <mesh castShadow position={[0, 0.05, 0]}><boxGeometry args={[1.1, 0.1, 0.9]} /><meshStandardMaterial color={"#b07a4e"} /></mesh>
+    </group>
+  );
+}
+function CounselTable({ position = [3.6, 0, -1.2], label = "Counsel" }) {
+  return (
+    <group position={position}>
+      <mesh castShadow position={[0, 0.6, 0]}><boxGeometry args={[2.0, 0.12, 1.0]} /><meshStandardMaterial color={"#b78656"} /></mesh>
+      <mesh castShadow position={[0.85, 0.3, 0.45]}><boxGeometry args={[0.1, 0.6, 0.1]} /><meshStandardMaterial color={"#8f673f"} /></mesh>
+      <mesh castShadow position={[-0.85, 0.3, 0.45]}><boxGeometry args={[0.1, 0.6, 0.1]} /><meshStandardMaterial color={"#8f673f"} /></mesh>
+      <mesh castShadow position={[0.6, 0.35, 0.0]}><boxGeometry args={[0.5, 0.35, 0.5]} /><meshStandardMaterial color={"#8a8a8a"} /></mesh>
+      <mesh castShadow position={[-0.6, 0.35, 0.0]}><boxGeometry args={[0.5, 0.35, 0.5]} /><meshStandardMaterial color={"#8a8a8a"} /></mesh>
+      <Text position={[0, 0.9, 0.55]} fontSize={0.22} color="#ffffff" anchorX="center" anchorY="middle" outlineWidth={0.02} outlineColor="#000000">
+        {label}
+      </Text>
+    </group>
+  );
+}
+function Guard({ position = [0,0,0], heading = 0, mirrored = false }) {
+  return (
+    <group position={position} rotation={[0, heading, 0]}>
+      <mesh position={[-0.18, 0.13, 0]}><capsuleGeometry args={[0.11, 0.1, 6, 12]} /><meshStandardMaterial color={"#222"} /></mesh>
+      <mesh position={[0.18, 0.13, 0]}><capsuleGeometry args={[0.11, 0.1, 6, 12]} /><meshStandardMaterial color={"#222"} /></mesh>
+      <mesh position={[0, 0.95, 0]} castShadow><capsuleGeometry args={[0.45, 0.9, 12, 16]} /><meshStandardMaterial color={"#3a5a9b"} /></mesh>
+      <group position={[0, 1.7, 0]}>
+        <mesh castShadow><sphereGeometry args={[0.35, 18, 16]} /><meshStandardMaterial color={"#ffe0bd"} /></mesh>
+        <mesh position={[0, 0.2, 0]} castShadow><sphereGeometry args={[0.38, 18, 16, 0, Math.PI*2, 0, Math.PI/2]} /><meshStandardMaterial color={"#2f3e5e"} /></mesh>
+        <mesh position={[0, 0.33, 0]} castShadow><coneGeometry args={[0.18, 0.22, 12]} /><meshStandardMaterial color={"#d5b36b"} /></mesh>
+      </group>
+      <group position={[mirrored ? -0.56 : 0.56, 1.1, 0]}>
+        <mesh castShadow><capsuleGeometry args={[0.08, 0.25, 6, 10]} /><meshStandardMaterial color={"#3a5a9b"} /></mesh>
+        <group position={[0, -0.28, 0]}>
+          <mesh castShadow position={[0, -0.18, 0]}><capsuleGeometry args={[0.07, 0.22, 6, 10]} /><meshStandardMaterial color={"#3a5a9b"} /></mesh>
+          <group position={[mirrored ? -0.05 : 0.05, -0.42, 0]}>
+            <mesh rotation={[0, 0, Math.PI/2]} position={[mirrored ? -0.05 : 0.05, 0, 0]} castShadow>
+              <cylinderGeometry args={[0.03, 0.03, 2.2, 8]} />
+              <meshStandardMaterial color={"#8f673f"} />
+            </mesh>
+            <mesh position={[mirrored ? -1.15 : 1.15, 0.22, 0]} rotation={[0, 0, mirrored ? -Math.PI/6 : Math.PI/6]}>
+              <coneGeometry args={[0.12, 0.4, 10]} />
+              <meshStandardMaterial color={"#d8dbe2"} metalness={0.6} roughness={0.3} />
+            </mesh>
+          </group>
+        </group>
+      </group>
+    </group>
+  );
+}
+
+/* Audience seating */
+function AudienceTiers() {
+  const rows = 5, stepDepth = 2.0, stepHeight = 0.6, startR = 12.0;
+  const tiers = useMemo(() => {
+    const arr = [];
+    for (let i = 0; i < rows; i++) {
+      const inner = startR + i * stepDepth, outer = inner + stepDepth * 1.02, y = 1.0 + i * stepHeight;
+      const seatRadius = (inner + outer) * 0.5;
+      arr.push({ inner, outer, y, seatRadius, idx: i });
+    }
+    return arr;
+  }, []);
+
+  return (
+    <group>
+      {tiers.map((t) => <Tier key={t.idx} {...t} />)}
+      {tiers.map((t, i) => (
+        <mesh key={`sk-${i}`} rotation={[-Math.PI / 2, 0, 0]} position={[0, t.y - 0.18, 0]} renderOrder={2}>
+          <ringGeometry args={[t.inner - 0.2, t.outer + 0.35, 96]} />
+          <meshStandardMaterial color={"#e9eef5"} side={THREE.DoubleSide} />
+        </mesh>
+      ))}
+      <RadialStair steps={rows + 2} startR={startR - 0.5} stepDepth={stepDepth} stepHeight={stepHeight} angleDeg={25} />
+      <RadialStair steps={rows + 2} startR={startR - 0.5} stepDepth={stepDepth} stepHeight={stepHeight} angleDeg={205} />
+    </group>
+  );
+}
+function Tier({ inner, outer, y, seatRadius }) {
+  const benchCount = Math.max(18, Math.round((2 * Math.PI * seatRadius) / 1.5));
+  const aisleAngles = [25 * (Math.PI / 180), 205 * (Math.PI / 180)];
+  const gapWidth = 0.22;
+  const idxs = useMemo(() => [...Array(benchCount).keys()], [benchCount]);
+
+  return (
+    <group position={[0, y, 0]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow renderOrder={3}>
+        <ringGeometry args={[inner, outer, 96]} />
+        <meshStandardMaterial color={"#f0f4fa"} side={THREE.DoubleSide} />
+      </mesh>
+
+      {idxs.map((i) => {
+        const a = (i / benchCount) * Math.PI * 2;
+        const x = Math.cos(a) * seatRadius, z = Math.sin(a) * seatRadius;
+        const nearAisle = aisleAngles.some((aa) => Math.abs(((a - aa + Math.PI * 3) % (Math.PI * 2)) - Math.PI) < gapWidth);
+        if (nearAisle) return null;
+        const yaw = Math.atan2(x, z);
+        return (
+          <group key={i} position={[x, 0, z]} rotation={[0, yaw, 0]}>
+            <mesh position={[0, 0.35, 0]} castShadow><boxGeometry args={[1.5, 0.22, 0.5]} /><meshStandardMaterial color={"#b07a4e"} /></mesh>
+            <mesh position={[0, 0.75, 0.28]} castShadow><boxGeometry args={[1.5, 0.6, 0.08]} /><meshStandardMaterial color={"#a27345"} /></mesh>
+            <mesh position={[0, 0.11, 0]} castShadow><boxGeometry args={[0.2, 0.22, 0.42]} /><meshStandardMaterial color={"#a97c4f"} /></mesh>
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+function RadialStair({ steps, startR, stepDepth, stepHeight, angleDeg }) {
+  const a = (angleDeg * Math.PI) / 180;
+  return (
+    <group rotation={[0, a, 0]}>
+      {Array.from({ length: steps }).map((_, i) => {
+        const r = startR + i * stepDepth, y = 1.0 + Math.max(0, i - 1) * stepHeight - 0.02, x = r;
+        return (
+          <mesh key={i} position={[x, y, 0]} rotation={[0, Math.PI / 2, 0]} castShadow>
+            <boxGeometry args={[stepDepth * 0.98, 0.12, 0.8]} />
+            <meshStandardMaterial color={"#e6ecf3"} />
+          </mesh>
+        );
+      })}
+    </group>
+  );
+}
