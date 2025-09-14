@@ -537,6 +537,7 @@ export default function CourtroomScene({ trialId, role: roleProp, name, cameraMo
   const [others, setOthers] = useState([]); // [{socketId, role, pose, display_name, handle, emote}]
   const lastPoseSentAt = useRef(0);
   const remoteSmooth = useRef({}); // socketId -> { pos: Vector3, ry }
+  const prevTrialRef = useRef(null);
 
   // Always ensure socket is connected (handles autoConnect:false setups)
   useEffect(() => {
@@ -639,6 +640,10 @@ export default function CourtroomScene({ trialId, role: roleProp, name, cameraMo
       setOthers(prev => prev.map(p => p.socketId === socketId ? { ...p, emote } : p));
     };
 
+    if (prevTrialRef.current && prevTrialRef.current !== trialId) {
+      socket.emit("room:leave", { trialId: prevTrialRef.current });
+    }
+    prevTrialRef.current = trialId;
     socket.emit("room:join", { trialId, role, name }, (ack) => {
       // support servers that use ACK callback
       if (ack?.ok && ack?.self && Array.isArray(ack?.participants)) {
@@ -671,7 +676,13 @@ export default function CourtroomScene({ trialId, role: roleProp, name, cameraMo
   }, [trialId, role, name]);
 
   // Clear seat usage on trial change
-  useEffect(() => { usedSeatsRef.current.clear(); }, [trialId]);
+  useEffect(() => {
+    usedSeatsRef.current.clear();
+    setAudSeat(null);
+    setEmoteState(null);
+    setOthers([]);
+    remoteSmooth.current = {};
+  }, [trialId]);
 
   // Emote hotkeys + notify server
   useEffect(() => {

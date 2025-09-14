@@ -252,7 +252,7 @@ export default function App() {
               <span style={{ opacity: 0.6 }}>Trial: {activeTrialId || "—"}</span>
             </div>
 
-            <CourtroomShell trialId={activeTrialId} role={role} currentProfile={currentProfile} />
+            <CourtroomShell trialId={activeTrialId} role={role} currentProfile={currentProfile} onNewTrial={(id)=>setActiveTrialId(id)} />
           </div>
         )}
       </div>

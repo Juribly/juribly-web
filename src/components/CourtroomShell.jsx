@@ -6,8 +6,8 @@ import CourtroomScene from "../3d/CourtroomScene.jsx";
 import RemoteCrowd from "./RemoteCrowd.jsx";
 import useMultiplayer from "../hooks/useMultiplayer.js";
 
-export default function CourtroomShell({ trialId="demo-1", role="Audience", currentProfile=null }) {
-  const { connected, self, others, joinRoom, updatePose } = useMultiplayer();
+export default function CourtroomShell({ trialId="demo-1", role="Audience", currentProfile=null, onNewTrial=null }) {
+  const { connected, self, others, joinRoom, updatePose, startTrial } = useMultiplayer();
   const selfSocketId = useRef(null);
   const name = currentProfile?.display_name || currentProfile?.handle || "Guest";
   const handle = currentProfile?.handle || null;
@@ -23,8 +23,19 @@ export default function CourtroomShell({ trialId="demo-1", role="Audience", curr
 
   return (
     <div style={{ position: "relative", height: "70vh", border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden", background: "#0b0b0b" }}>
-      <div style={{ position: "absolute", zIndex: 10, top: 8, left: 8, fontSize: 12, color: connected ? "#16a34a" : "#ef4444" }}>
+      <div style={{ position: "absolute", zIndex: 10, top: 8, left: 8, fontSize: 12, color: connected ? "#16a34a" : "#ef4444", display: "flex", gap: 6, alignItems: "center" }}>
         {connected ? "● connected" : "○ offline"} — trial <b>{trialId}</b>
+        {role === "Judge" && (
+          <button
+            onClick={async () => {
+              const id = await startTrial();
+              if (id) onNewTrial?.(id);
+            }}
+            style={{ padding: "2px 6px", borderRadius: 4, border: "1px solid #ccc", background: "#fff", color: "#000", fontSize: 12 }}
+          >
+            New Trial
+          </button>
+        )}
       </div>
       <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 2.5, 6], fov: 50 }}>
         {/* lights */}
