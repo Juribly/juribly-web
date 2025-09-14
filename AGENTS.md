@@ -1,16 +1,16 @@
-﻿# AGENTS.md — juribly-web
+# AGENTS.md — juribly-web
 
 ## Stack & setup
-- Node 20.x, pnpm preferred.
-- Frontend: Vite + React (dev: pnpm dev).
+- Node 20.x, npm preferred.
+- Frontend: Vite + React (dev: npm run dev).
 - Realtime/game: @react-three/fiber + drei.
 - Backend proxy/dev server (if any) in server/.
 
 ## How to run locally
-1) pnpm i
-2) pnpm lint && pnpm typecheck
-3) pnpm test
-4) pnpm dev  # port 5173 (fallback 5175)
+1) npm install
+2) npm run lint && npm run typecheck
+3) npm test
+4) npm run dev  # port 5173 (fallback 5175)
 
 ## Coding rules
 - Return **full-file replacements** in patches.
