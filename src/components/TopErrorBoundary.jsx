@@ -11,7 +11,6 @@ export default class TopErrorBoundary extends React.Component {
   }
   componentDidCatch(err, info) {
     // Show in console too
-    // eslint-disable-next-line no-console
     console.error("TopErrorBoundary caught:", err, info);
   }
   render() {

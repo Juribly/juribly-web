@@ -47,7 +47,7 @@ function useKeys() {
  * - colliderRootRef: ref to scene root (used to collect colliders)
  */
 export default function ThirdPersonController({ modelRef, colliderRootRef }) {
-  const { camera, scene } = useThree();
+  const { camera } = useThree();
   const keys = useKeys();
   const vel = useRef(new THREE.Vector3());
   const colliders = useMemo(
